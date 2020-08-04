@@ -1,0 +1,11 @@
+#!/sbin/openrc-run
+supervisor=supervise-daemon
+
+name="Prometheus mDNS SD"
+
+command=/usr/sbin/prometheus-mdns-sd
+command_args="${ARGS:--out /etc/prometheus/mdns-sd.json}"
+
+depend() {
+	need networking
+}

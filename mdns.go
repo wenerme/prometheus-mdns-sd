@@ -21,6 +21,7 @@ import (
 	"hash/fnv"
 	"io/ioutil"
 	"log"
+	"net"
 	"os"
 	"sort"
 	"strings"
@@ -57,8 +58,11 @@ func (t TargetGroups) Less(i, j int) bool {
 }
 
 var (
-	interval = flag.Duration("interval", 10*time.Second, "How often to query for services")
-	output   = flag.String("out", "-", "Filename to write output to")
+	interval          = flag.Duration("interval", 10*time.Second, "How often to query for services")
+	output            = flag.String("out", "-", "Filename to write output to")
+	ipv4Only          = flag.Bool("4", false, "IPv4 address only")
+	listInterfaceOnly = flag.Bool("l", false, "List interface and exit")
+	iface             = flag.String("i", "", "Interface for multicast")
 )
 
 func init() {
@@ -68,8 +72,28 @@ func init() {
 
 func main() {
 	flag.Parse()
+
+	if *listInterfaceOnly {
+		listInterface()
+		return
+	}
+
 	d := &Discovery{
 		interval: *interval,
+		ifaces:   make([]*net.Interface, 0),
+	}
+
+	if *iface != "" {
+		for _, v := range strings.Split(*iface, ",") {
+			i, err := net.InterfaceByName(v)
+			if err != nil {
+				panic(err)
+			}
+			if i == nil {
+				panic(fmt.Errorf("interface not found %v", *iface))
+			}
+			d.ifaces = append(d.ifaces, i)
+		}
 	}
 
 	ctx := context.Background()
@@ -117,6 +141,7 @@ func main() {
 // the TargetProvider interface.
 type Discovery struct {
 	interval time.Duration
+	ifaces   []*net.Interface
 }
 
 // Run implements the TargetProvider interface.
@@ -184,7 +209,16 @@ func (dd *Discovery) refresh(ctx context.Context, name string, ch chan<- *Target
 	go func() {
 		// TODO: Capture err somewhere
 		//err := mdns.Lookup(name, responses)
-		mdns.Lookup(name, responses)
+		params := mdns.DefaultParams(name)
+		params.Entries = responses
+		if len(dd.ifaces) > 0 {
+			for _, iface := range dd.ifaces {
+				params.Interface = iface
+				mdns.Query(params)
+			}
+		} else {
+			mdns.Query(params)
+		}
 		close(responses)
 	}()
 
@@ -196,7 +230,9 @@ func (dd *Discovery) refresh(ctx context.Context, name string, ch chan<- *Target
 			if !chanOpen {
 				return nil
 			}
-
+			if *ipv4Only && response.AddrV4 == nil {
+				continue
+			}
 			// Make a new targetGroup with one address-label for each thing we scape
 			//
 			// Check https://github.com/prometheus/common/blob/master/model/labels.go for possible labels.
@@ -242,5 +278,16 @@ func (dd *Discovery) refresh(ctx context.Context, name string, ch chan<- *Target
 
 			ch <- tg
 		}
+	}
+}
+
+func listInterface() {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("name flags")
+	for _, v := range ifaces {
+		fmt.Printf("%v %v\n", v.Name, v.Flags)
 	}
 }
